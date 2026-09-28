@@ -1,103 +1,90 @@
 name: Build FastX Rootless
+on: workflow_dispatch: push: branches: [ main ]
+permissions: contents: read
+jobs: build: runs-on: macos-14 steps: - name: Checkout source uses: actions/checkout@v4
+  - name: Select Xcode
+    shell: bash
+    run: |
+      set -euo pipefail
+      XCODE_APP="/Applications/Xcode.app"
+      if [ ! -d "$XCODE_APP" ]; then
+        XCODE_APP=$(find /Applications -maxdepth 1 -type d -name 'Xcode*.app' -print | sort | head -1)
+      fi
+      [ -n "$XCODE_APP" ] && [ -d "$XCODE_APP/Contents/Developer" ]
+      sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+      xcodebuild -version
+      xcrun --sdk iphoneos --show-sdk-path
 
-on:
-  workflow_dispatch:
-  push:
-    branches: [ main ]
+  - name: Install packaging dependencies
+    shell: bash
+    run: |
+      brew update
+      brew install ldid dpkg fakeroot
+      ldid -h >/dev/null 2>&1 || true
+      dpkg-deb --version
+      fakeroot --version
 
-permissions:
-  contents: read
+  - name: Install Theos
+    shell: bash
+    run: |
+      git clone --recursive --depth 1 https://github.com/theos/theos.git "$HOME/theos"
+      echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
+      echo "$HOME/theos/bin" >> "$GITHUB_PATH"
+      git -C "$HOME/theos" rev-parse HEAD
 
-jobs:
-  build:
-    runs-on: macos-14
-    steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
+  - name: Build Rootless package
+    shell: bash
+    run: |
+      export THEOS="$HOME/theos"
+      chmod +x build.sh build-tweak.sh verify-build.sh
+      ./build.sh
 
-      - name: Select Xcode
-        shell: bash
-        run: |
-          set -euo pipefail
-          XCODE_APP="/Applications/Xcode.app"
-          if [ ! -d "$XCODE_APP" ]; then
-            XCODE_APP=$(find /Applications -maxdepth 1 -type d -name 'Xcode*.app' -print | sort | head -1)
-          fi
-          [ -n "$XCODE_APP" ] && [ -d "$XCODE_APP/Contents/Developer" ]
-          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
-          xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-path
+  - name: Verify Rootless artifacts
+    shell: bash
+    run: |
+      export THEOS="$HOME/theos"
+      ./verify-build.sh
 
-      - name: Install packaging dependencies
-        shell: bash
-        run: |
-          brew update
-          brew install ldid dpkg fakeroot
-          ldid -h >/dev/null 2>&1 || true
-          dpkg-deb --version
-          fakeroot --version
+  - name: Collect build artifacts
+    shell: bash
+    run: |
+      set -euo pipefail
+      rm -rf artifacts
+      mkdir -p artifacts/deb artifacts/binaries artifacts/metadata
+      cp packages/*.deb artifacts/deb/
+      find .theos -type f ￼ -exec cp {} artifacts/binaries/ \;
+      cp Makefile README.md Resources/ROOTLESS_NOTES.md artifacts/metadata/
+      cp layout/DEBIAN/control FastX/FastX.plist artifacts/metadata/
+      printf 'Theos commit: ' > artifacts/metadata/build-info.txt
+      git -C "$THEOS" rev-parse HEAD >> artifacts/metadata/build-info.txt
+      printf 'Xcode: ' >> artifacts/metadata/build-info.txt
+      xcodebuild -version | tr '\n' ' ' >> artifacts/metadata/build-info.txt
+      printf '\nSDK: ' >> artifacts/metadata/build-info.txt
+      xcrun --sdk iphoneos --show-sdk-version >> artifacts/metadata/build-info.txt
+      printf 'Package SHA256:\n' >> artifacts/metadata/build-info.txt
+      shasum -a 256 packages/*.deb >> artifacts/metadata/build-info.txt
+      find artifacts -type f -maxdepth 3 -print
 
-      - name: Install Theos
-        shell: bash
-        run: |
-          git clone --recursive --depth 1 https://github.com/theos/theos.git "$HOME/theos"
-          echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
-          echo "$HOME/theos/bin" >> "$GITHUB_PATH"
-          git -C "$HOME/theos" rev-parse HEAD
+  - name: Upload DEB
+    uses: actions/upload-artifact@v4
+    with:
+      name: FastX-Rootless-deb
+      path: artifacts/deb/*.deb
+      if-no-files-found: error
+      retention-days: 14
 
-      - name: Build Rootless package
-        shell: bash
-        run: |
-          export THEOS="$HOME/theos"
-          chmod +x build.sh build-tweak.sh verify-build.sh
-          ./build.sh
+  - name: Upload tweak binaries
+    uses: actions/upload-artifact@v4
+    with:
+      name: FastX-Rootless-binaries
+      path: artifacts/binaries/*
+      if-no-files-found: error
+      retention-days: 14
 
-      - name: Verify Rootless artifacts
-        shell: bash
-        run: |
-          export THEOS="$HOME/theos"
-          ./verify-build.sh
-
-      - name: Collect build artifacts
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf artifacts
-          mkdir -p artifacts/deb artifacts/binaries artifacts/metadata
-          cp packages/*.deb artifacts/deb/
-          find .theos -type f \( -name 'FastX.dylib' -o -name 'FastXPrefs' \) -exec cp {} artifacts/binaries/ \;
-          cp Makefile README.md Resources/ROOTLESS_NOTES.md artifacts/metadata/
-          cp layout/DEBIAN/control FastX/FastX.plist artifacts/metadata/
-          printf 'Theos commit: ' > artifacts/metadata/build-info.txt
-          git -C "$THEOS" rev-parse HEAD >> artifacts/metadata/build-info.txt
-          printf 'Xcode: ' >> artifacts/metadata/build-info.txt
-          xcodebuild -version | tr '\n' ' ' >> artifacts/metadata/build-info.txt
-          printf '\nSDK: ' >> artifacts/metadata/build-info.txt
-          xcrun --sdk iphoneos --show-sdk-version >> artifacts/metadata/build-info.txt
-          printf 'Package SHA256:\n' >> artifacts/metadata/build-info.txt
-          shasum -a 256 packages/*.deb >> artifacts/metadata/build-info.txt
-          find artifacts -type f -maxdepth 3 -print
-
-      - name: Upload DEB
-        uses: actions/upload-artifact@v4
-        with:
-          name: FastX-Rootless-deb
-          path: artifacts/deb/*.deb
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload tweak binaries
-        uses: actions/upload-artifact@v4
-        with:
-          name: FastX-Rootless-binaries
-          path: artifacts/binaries/*
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload build metadata
-        uses: actions/upload-artifact@v4
-        with:
-          name: FastX-Rootless-build-metadata
-          path: artifacts/metadata/*
-          if-no-files-found: error
-          retention-days: 14
+  - name: Upload build metadata
+    uses: actions/upload-artifact@v4
+    with:
+      name: FastX-Rootless-build-metadata
+      path: artifacts/metadata/*
+      if-no-files-found: error
+      retention-days: 14
