@@ -1,0 +1,8 @@
+Package: org.cydia.kiimo.fastx
+Name: FastX Rootless
+Version: 1.5.1
+Architecture: iphoneos-arm64
+Maintainer: FastX
+Section: Tweaks
+Depends: firmware (>= 15.0), ellekit
+Description: FastX Rootless tweak and preferences for ElleKit-based jailbreaks
